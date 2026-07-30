@@ -1,0 +1,79 @@
+name: Decompile ProtocolesMed.zip
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  decompile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unzip ProtocolesMed.zip
+        run: |
+          mkdir -p extracted
+          unzip -o ProtocolesMed.zip -d extracted || true
+          echo "extraction done"
+
+      - name: Setup Java (needed for CFR / jadx)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download jadx (for APK / DEX)
+        run: |
+          JADX_VER=1.4.6
+          wget -qO jadx.zip "https://github.com/skylot/jadx/releases/download/v${JADX_VER}/jadx-${JADX_VER}.zip"
+          unzip -q jadx.zip -d jadx
+          ls -la jadx
+
+      - name: Download CFR (for JAR / CLASS)
+        run: |
+          CFR_URL="https://www.benf.org/other/cfr/cfr-0.151.jar"
+          wget -qO cfr.jar "$CFR_URL"
+          ls -l cfr.jar
+
+      - name: Find files to decompile
+        run: |
+          find extracted -type f \( -iname '*.apk' -o -iname '*.dex' -o -iname '*.jar' -o -iname '*.class' \) > files.txt || true
+          echo "=== Files found ==="
+          cat files.txt || true
+
+      - name: Decompile found files (jadx / cfr)
+        run: |
+          mkdir -p decompiled
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            ext="${f##*.}"
+            bn="$(basename "$f")"
+            case "${ext,,}" in
+              apk|dex)
+                echo "Decompiling APK/DEX: $f"
+                ./jadx/jadx-*/bin/jadx -d "decompiled/${bn}.jadx" "$f" || echo "jadx failed for $f"
+                ;;
+              jar)
+                echo "Decompiling JAR with CFR: $f"
+                java -jar cfr.jar --outputdir "decompiled/${bn}.cfr" "$f" || echo "cfr failed for $f"
+                ;;
+              class)
+                echo "Decompiling single .class file: $f"
+                tmpdir="$(mktemp -d)"
+                cp "$f" "$tmpdir/"
+                (cd "$tmpdir" && jar cf classes-temp.jar *.class)
+                java -jar /github/workspace/cfr.jar --outputdir "/github/workspace/decompiled/${bn}.cfr" "$tmpdir/classes-temp.jar" || echo "cfr failed"
+                rm -rf "$tmpdir"
+                ;;
+              *)
+                echo "Skipping unknown file type: $f"
+                ;;
+            esac
+          done < files.txt
+          echo "Decompilation finished."
+
+      - name: Upload decompiled sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: decompiled-sources
+          path: decompiled
